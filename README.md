@@ -10,7 +10,7 @@ Open the deployed site in Chrome or Edge and install it from the install icon in
 
 - runs in its own window and works offline
 - appears in **Open with** for text files in the ChromeOS Files app (and in the OS open-with menu on other desktop platforms where Chrome supports file handling)
-- reopens the files you had open last time
+- reopens the files you had open last time (the first window reopens them, and the last window you close decides what reopens next)
 
 Opening and saving files uses the [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API), so it needs a Chromium-based browser.
 
