@@ -32,10 +32,11 @@ MenuController.prototype.addNewTab_ = function(e, tab) {
   filenameElement.id = 'tab' + id;
   filenameElement.textContent = tab.getName();
   filenameElement.className = 'filename sidebar-button';
+  filenameElement.title = tab.getPath() || '';
   tabElement.appendChild(filenameElement);
   const closeElement = document.createElement('button');
   closeElement.textContent = 'close';
-  closeElement.setAttribute('title', chrome.i18n.getMessage('closeFileButton'))
+  closeElement.setAttribute('title', i18n.getMessage('closeFileButton'))
   closeElement.classList.add('close', 'mdc-icon-button', 'material-icons');
   mdc.ripple.MDCRipple.attachTo(closeElement).unbounded = true;
   tabElement.appendChild(closeElement);

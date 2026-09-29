@@ -29,7 +29,7 @@ SearchController.prototype.updateSearchCount_ = function() {
   }
   var searchCount = this.search_.getResultsCount();
   var searchIndex = this.search_.getCurrentIndex();
-  $('#search-counting').text(chrome.i18n.getMessage('searchCounting',
+  $('#search-counting').text(i18n.getMessage('searchCounting',
       [searchIndex, searchCount]));
   if (searchCount === 0) {
     $('#search-counting').addClass('nomatches');

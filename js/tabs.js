@@ -3,7 +3,8 @@
  * @param {number} id
  * @param {window.CodeMirror.state.EditorState} session Edit session.
  * @param {string} lineEndings What character(s) to use as the line ending.
- * @param {FileEntry} entry
+ * @param {?FileSystemFileHandle} entry The file shown in the tab, if any.
+ * @param {DialogController} dialogController
  */
 function Tab(id, session, lineEndings, entry, dialogController) {
   this.id_ = id;
@@ -11,9 +12,12 @@ function Tab(id, session, lineEndings, entry, dialogController) {
   this.session_ = session;
   /** @type {string} Separator between lines. */
   this.lineEndings_ = lineEndings;
-  /** @type {FileEntry} */
+  /** @type {?FileSystemFileHandle} */
   this.entry_ = entry;
   this.saved_ = true;
+  /** @type {number} Incremented on every edit; used to detect edits made
+   *  while a save is in flight. */
+  this.version_ = 0;
   this.path_ = null;
   this.dialogController_ = dialogController;
   if (this.entry_)
@@ -52,7 +56,7 @@ Tab.prototype.setSession = function(session) {
 };
 
 /**
- * @param {FileEntry} entry
+ * @param {!FileSystemFileHandle} entry
  */
 Tab.prototype.setEntry = function(entry) {
   var nameChanged = this.getName() != entry.name;
@@ -60,6 +64,7 @@ Tab.prototype.setEntry = function(entry) {
   if (nameChanged)
     $.event.trigger('tabrenamed', this);
   this.updatePath_();
+  $.event.trigger('tabentrychange', this);
 };
 
 Tab.prototype.getEntry = function() {
@@ -71,10 +76,10 @@ Tab.prototype.getPath = function() {
 };
 
 Tab.prototype.updatePath_ = function() {
-  chrome.fileSystem.getDisplayPath(this.entry_, function(path) {
-    this.path_ = path;
-    $.event.trigger('tabpathchange', this);
-  }.bind(this));
+  // The File System Access API doesn't expose full paths, so the file name is
+  // the most specific location available.
+  this.path_ = this.entry_ ? this.entry_.name : null;
+  $.event.trigger('tabpathchange', this);
 };
 
 /** Get the contents of the file in the tab. */
@@ -86,25 +91,25 @@ Tab.prototype.getContent_ = function() {
 };
 
 Tab.prototype.save = function(opt_callbackDone) {
-  util.writeFile(
-    this.entry_, this.getContent_(),
-    function() {
-      this.saved_ = true;
-      $.event.trigger('tabsave', this);
-      if (opt_callbackDone)
-        opt_callbackDone();
-    }.bind(this),
-    this.reportWriteError_.bind(this));
+  var version = this.version_;
+  fileSystem.writeText(this.entry_, this.getContent_()).then(
+      function() {
+        // Only mark the tab saved if nothing was typed while writing.
+        if (this.version_ === version) {
+          this.saved_ = true;
+          $.event.trigger('tabsave', this);
+        }
+        if (opt_callbackDone)
+          opt_callbackDone();
+      }.bind(this),
+      this.reportWriteError_.bind(this));
 };
 
 Tab.prototype.reportWriteError_ = function(e) {
-  this.dialogController_.setText(
-      // TODO: Replace this with i18n message
-      'Error saving file: ' + util.fsErrorStr(e));
-  this.dialogController_.resetButtons();
-  this.dialogController_.addButton('ok',
-      chrome.i18n.getMessage('okDialogButton'));
-  this.dialogController_.show();
+  util.handleFSError(e);
+  // TODO: Replace this with i18n message
+  this.dialogController_.showError(
+      'Error saving file: ' + fileSystem.errorToString(e));
 };
 
 Tab.prototype.isSaved = function() {
@@ -112,6 +117,7 @@ Tab.prototype.isSaved = function() {
 };
 
 Tab.prototype.changed = function() {
+  this.version_++;
   if (this.saved_) {
     this.saved_ = false;
     $.event.trigger('tabchange', this);
@@ -132,57 +138,11 @@ function Tabs(editor, dialogController, settings) {
   this.tabs_ = [];
   /** @type {Tab|null} Current selected tab, or initially null. */
   this.currentTab_ = null;
+  /** @type {!Promise} Serializes file opens so duplicates are detected. */
+  this.openQueue_ = Promise.resolve();
 
   $(document).bind('docchange', this.onDocChanged_.bind(this));
 }
-
-/**
- * @type {Object} params
- * @type {function(FileEntry)} callback
- * Open a file in the system file picker. The FileEntry is copied to be stored
- * in background page, so it isn't destroyed when the window is closed.
- */
-Tabs.prototype.chooseEntry = function(params, callback) {
-  // TODO: Remove this when crbug.com/326523 is fixed.
-  if (params.acceptsMultiple) {
-    console.error('acceptsMultiple is not supported when saving a file');
-    return;
-  }
-  chrome.fileSystem.chooseEntry(
-      params,
-      function(entry) {
-        if (entry) {
-          chrome.runtime.getBackgroundPage(function(bg) {
-            bg.background.copyFileEntry(entry, callback);
-          });
-        }
-      });
-};
-
-/**
- * @type {Object} params
- * @type {function(FileEntry)} callback
- * @type {function()} opt_oncancel
- * Open one or multiple files in the system file picker. File Entries are
- * copied to be stored in background page, so they aren't destroyed when the
- * window is closed. Callback is called once for each File Entry.
- */
-Tabs.prototype.chooseEntries = function(params, callback, opt_oncancel) {
-  params.acceptsMultiple = true;
-  chrome.fileSystem.chooseEntry(
-      params,
-      function(entries) {
-        if (entries) {
-          chrome.runtime.getBackgroundPage(function(bg) {
-            for (var i = 0; i < entries.length; i++)
-              bg.background.copyFileEntry(entries[i], callback);
-          });
-        } else {
-          if (opt_oncancel)
-            opt_oncancel();
-        }
-      });
-};
 
 Tabs.prototype.getTabById = function(id) {
   for (var i = 0; i < this.tabs_.length; i++) {
@@ -196,11 +156,18 @@ Tabs.prototype.getCurrentTab = function() {
   return this.currentTab_;
 };
 
+/**
+ * Opens a new, empty app window. The query parameter tells the new window not
+ * to reopen the files from the last session.
+ */
 Tabs.prototype.newWindow = function() {
-  chrome.runtime.getBackgroundPage(function(bg) {
-    bg.background.newWindow();
-  }.bind(this));
+  var url = new URL('./', window.location.href);
+  url.searchParams.set(Tabs.NEW_WINDOW_PARAM, '1');
+  window.open(url.href, '_blank');
 };
+
+/** @const {string} */
+Tabs.NEW_WINDOW_PARAM = 'new-window';
 
 /**
  * Add a new tab.
@@ -233,6 +200,7 @@ Tabs.prototype.reorder = function (oldIndex, newIndex) {
       newIndex, // specifies at what position to add items
       0, // no items will be removed
       this.tabs_.splice(oldIndex, 1)[0]); // item to be added
+  $.event.trigger('tabsreordered');
 };
 
 Tabs.prototype.getTabIndex = function(tab) {
@@ -308,21 +276,31 @@ Tabs.prototype.close = function(tabId) {
  * (invoking auto-save and, if needed, SaveAs dialog) is Tabs.close().
  */
 Tabs.prototype.closeTab_ = function(tab) {
+  var closingLastTab = false;
   if (tab === this.currentTab_) {
     if (this.tabs_.length > 1) {
       this.nextTab();
     } else {
-      window.close();
+      closingLastTab = true;
     }
   }
 
-  for (var i = 0; i < this.tabs_.length; i++) {
-    if (this.tabs_[i] === tab)
-      break;
-  }
+  var i = this.getTabIndex(tab);
+  if (i < 0) return;
 
   this.tabs_.splice(i, 1);
   $.event.trigger('tabclosed', tab);
+
+  if (closingLastTab) {
+    this.currentTab_ = null;
+    if (util.isInstalledApp()) {
+      // Closing the last tab closes the app window, as in the Chrome App.
+      window.close();
+    } else {
+      // A browser tab can't be closed by script, so start a fresh document.
+      this.newTab();
+    }
+  }
 };
 
 /**
@@ -339,9 +317,12 @@ Tabs.prototype.closeCurrent = function() {
 };
 
 Tabs.prototype.openFiles = function() {
-  this.chooseEntries(
-      {'type': 'openWritableFile'},
-      this.openFileEntry.bind(this));
+  fileSystem.pickFilesToOpen().then(
+      function(entries) {
+        for (var i = 0; i < entries.length; i++)
+          this.openFileEntry(entries[i]);
+      }.bind(this),
+      this.reportOpenError_.bind(this));
 };
 
 /**
@@ -383,16 +364,16 @@ Tabs.prototype.promptAllUnsavedFromIndex_ = function(i, callback) {
  */
 Tabs.prototype.promptSave_ = function(tab, callbackShowDialog) {
   this.dialogController_.setText(
-      chrome.i18n.getMessage('saveFilePromptLine1', tab.getName()),
-      chrome.i18n.getMessage('saveFilePromptLine2')
+      i18n.getMessage('saveFilePromptLine1', tab.getName()),
+      i18n.getMessage('saveFilePromptLine2')
   );
   this.dialogController_.resetButtons();
   this.dialogController_.addButton('yes',
-      chrome.i18n.getMessage('yesDialogButton'));
+      i18n.getMessage('yesDialogButton'));
   this.dialogController_.addButton('no',
-      chrome.i18n.getMessage('noDialogButton'));
+      i18n.getMessage('noDialogButton'));
   this.dialogController_.addButton('cancel',
-      chrome.i18n.getMessage('cancelDialogButton'));
+      i18n.getMessage('cancelDialogButton'));
   this.dialogController_.show(callbackShowDialog);
 };
 
@@ -434,23 +415,25 @@ Tabs.prototype.saveAs = function(opt_tab, opt_callback) {
   if (!util.getExtension(suggestedName)) {
       suggestedName += '.txt';
   }
-  this.chooseEntry(
-      {'type': 'saveFile', 'suggestedName': suggestedName},
+  fileSystem.pickFileToSave(suggestedName).then(
       function(entry) {
+        // saveEntry_ calls opt_callback once the write has finished.
         this.saveEntry_(tab, entry, opt_callback);
-        if (opt_callback) {
-          opt_callback();
-        }
+      }.bind(this),
+      function(e) {
+        // TODO: Replace this with i18n message
+        this.dialogController_.showError(
+            'Error saving file: ' + fileSystem.errorToString(e));
       }.bind(this));
 };
 
 /**
- * @return {Array.<FileEntry>}
+ * @return {!Array<!FileSystemFileHandle>} The files open in tabs, in order.
  */
 Tabs.prototype.getFilesToRetain = function() {
   var toRetain = [];
 
-  for (i = 0; i < this.tabs_.length; i++) {
+  for (var i = 0; i < this.tabs_.length; i++) {
     if (this.tabs_[i].getEntry()) {
       toRetain.push(this.tabs_[i].getEntry());
     }
@@ -459,17 +442,55 @@ Tabs.prototype.getFilesToRetain = function() {
   return toRetain;
 };
 
+/**
+ * Opens the file in a new tab, or switches to its tab if it's already open.
+ * Opens are queued so that opening the same file twice at once can't create
+ * two tabs for it.
+ * @param {!FileSystemFileHandle} entry
+ * @return {!Promise}
+ */
 Tabs.prototype.openFileEntry = function(entry) {
-  chrome.fileSystem.getDisplayPath(entry, function(path) {
-    for (var i = 0; i < this.tabs_.length; i++) {
-      if (this.tabs_[i].getPath() === path) {
-        this.showTab(this.tabs_[i].getId());
-        return;
-      }
-    }
+  var opened = this.openQueue_.then(this.openFileEntryNow_.bind(this, entry));
+  this.openQueue_ = opened.catch(function(e) {
+    console.error('Failed to open file:', e);
+  });
+  return opened;
+};
 
-    entry.file(this.readFileToNewTab_.bind(this, entry));
-  }.bind(this));
+/**
+ * @param {!FileSystemFileHandle} entry
+ * @return {!Promise}
+ * @private
+ */
+Tabs.prototype.openFileEntryNow_ = async function(entry) {
+  for (var i = 0; i < this.tabs_.length; i++) {
+    var tabEntry = this.tabs_[i].getEntry();
+    if (tabEntry && await fileSystem.isSameFile(tabEntry, entry)) {
+      this.showTab(this.tabs_[i].getId());
+      return;
+    }
+  }
+
+  $.event.trigger('loadingfile');
+  var content;
+  try {
+    content = await fileSystem.readText(entry);
+  } catch (e) {
+    util.handleFSError(e);
+    this.reportOpenError_(e);
+    return;
+  }
+  this.addFileTab_(entry, content);
+};
+
+/**
+ * @param {*} e
+ * @private
+ */
+Tabs.prototype.reportOpenError_ = function(e) {
+  // TODO: Replace this with i18n message
+  this.dialogController_.showError(
+      'Error opening file: ' + fileSystem.errorToString(e));
 };
 
 /**
@@ -487,25 +508,25 @@ Tabs.prototype.modeAutoSet = function(tab) {
   }
 };
 
-Tabs.prototype.readFileToNewTab_ = function(entry, file) {
-  $.event.trigger('loadingfile');
-  var self = this;
-  var reader = new FileReader();
-  reader.onerror = util.handleFSError;
-  reader.onloadend = function(e) {
-    self.newTab(this.result, entry);
-    if (self.tabs_.length === 2 &&
-        !self.tabs_[0].getEntry() &&
-        self.tabs_[0].isSaved()) {
-      self.close(self.tabs_[0].getId());
-    }
-  };
-  reader.readAsText(file);
-}
+/**
+ * Adds a tab for a file that has been read, replacing the initial empty
+ * Untitled tab if it's the only other one.
+ * @param {!FileSystemFileHandle} entry
+ * @param {string} content
+ * @private
+ */
+Tabs.prototype.addFileTab_ = function(entry, content) {
+  this.newTab(content, entry);
+  if (this.tabs_.length === 2 &&
+      !this.tabs_[0].getEntry() &&
+      this.tabs_[0].isSaved()) {
+    this.close(this.tabs_[0].getId());
+  }
+};
 
 /**
  * @param {!Tab} tab
- * @param {FileEntry} entry
+ * @param {?FileSystemFileHandle} entry
  * @param {function()=} opt_callback
  */
 Tabs.prototype.saveEntry_ = function(tab, entry, opt_callback) {
@@ -521,7 +542,8 @@ Tabs.prototype.saveEntry_ = function(tab, entry, opt_callback) {
  * The event handler for the docchange event.
  */
 Tabs.prototype.onDocChanged_ = function() {
-  this.currentTab_.changed();
+  if (this.currentTab_)
+    this.currentTab_.changed();
 }
 
 /**
@@ -530,4 +552,15 @@ Tabs.prototype.onDocChanged_ = function() {
  */
 Tabs.prototype.hasOpenTab = function() {
   return !!this.tabs_.length;
+};
+
+/**
+ * @return {boolean} True if any tab has changes that haven't been saved.
+ */
+Tabs.prototype.hasUnsavedTabs = function() {
+  for (var i = 0; i < this.tabs_.length; i++) {
+    if (!this.tabs_[i].isSaved())
+      return true;
+  }
+  return false;
 };
