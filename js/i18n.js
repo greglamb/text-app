@@ -68,6 +68,17 @@ var i18n = (function() {
   }
 
   /**
+   * @param {!Object} messages A parsed messages.json.
+   * @return {!Object} The same entries keyed by lowercase name, because
+   *     chrome.i18n message names are case-insensitive.
+   */
+  function lowercaseKeys(messages) {
+    var result = {};
+    for (var name in messages) result[name.toLowerCase()] = messages[name];
+    return result;
+  }
+
+  /**
    * @param {string} locale
    * @return {!Promise<!Object>} The parsed messages.json, or {} on failure.
    */
@@ -77,6 +88,7 @@ var i18n = (function() {
           if (!response.ok) throw new Error(response.status);
           return response.json();
         })
+        .then(lowercaseKeys)
         .catch(function(e) {
           console.warn('Could not load messages for locale', locale, e);
           return {};
@@ -132,7 +144,8 @@ var i18n = (function() {
    * @return {string}
    */
   function getMessage(key, opt_substitutions) {
-    var entry = messages_[key] || fallbackMessages_[key];
+    var name = String(key).toLowerCase();
+    var entry = messages_[name] || fallbackMessages_[name];
     if (!entry) return '';
     var substitutions = opt_substitutions === undefined ? [] :
         (Array.isArray(opt_substitutions) ?

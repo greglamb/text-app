@@ -2,7 +2,7 @@
   "name": "Text",
   "short_name": "Text",
   "description": "A text editor for ChromeOS and Chrome.",
-  "id": "./",
+  "id": "text-app",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

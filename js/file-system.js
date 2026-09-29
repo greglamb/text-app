@@ -88,11 +88,21 @@ fileSystem.ensurePermission = async function(handle, mode) {
 
 /**
  * @param {!FileSystemFileHandle} handle
- * @return {!Promise<string>} The file's contents decoded as UTF-8.
+ * @return {!Promise<string>} The file's contents. Like FileReader.readAsText
+ *     in the Chrome App, a byte order mark selects UTF-16 and anything else
+ *     is decoded as UTF-8. Saving always writes UTF-8.
  */
 fileSystem.readText = async function(handle) {
-  const file = await handle.getFile();
-  return file.text();
+  const buffer = await (await handle.getFile()).arrayBuffer();
+  const bytes = new Uint8Array(buffer, 0, Math.min(2, buffer.byteLength));
+  let encoding = 'utf-8';
+  if (bytes[0] === 0xFF && bytes[1] === 0xFE) {
+    encoding = 'utf-16le';
+  } else if (bytes[0] === 0xFE && bytes[1] === 0xFF) {
+    encoding = 'utf-16be';
+  }
+  // TextDecoder strips the byte order mark by default.
+  return new TextDecoder(encoding).decode(buffer);
 };
 
 /**

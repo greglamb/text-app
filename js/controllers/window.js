@@ -75,7 +75,9 @@ WindowController.prototype.setTheme = function(theme) {
  * Close app window after warning user of all unsaved progress if present.
  */
 WindowController.prototype.close = function() {
-  this.tabs_.promptAllUnsaved(() => window.close());
+  this.tabs_.promptAllUnsaved(() => {
+    $.event.trigger('windowcloserequested');
+  });
 };
 
 WindowController.prototype.focus_ = function() {

@@ -18,6 +18,8 @@ function Tab(id, session, lineEndings, entry, dialogController) {
   /** @type {number} Incremented on every edit; used to detect edits made
    *  while a save is in flight. */
   this.version_ = 0;
+  /** @type {!Promise} Serializes saves so an older write can't land last. */
+  this.saveQueue_ = Promise.resolve();
   this.path_ = null;
   this.dialogController_ = dialogController;
   if (this.entry_)
@@ -91,8 +93,13 @@ Tab.prototype.getContent_ = function() {
 };
 
 Tab.prototype.save = function(opt_callbackDone) {
+  // Capture what to write now; the write itself waits for earlier saves.
+  var entry = this.entry_;
+  var content = this.getContent_();
   var version = this.version_;
-  fileSystem.writeText(this.entry_, this.getContent_()).then(
+  this.saveQueue_ = this.saveQueue_.then(function() {
+    return fileSystem.writeText(entry, content);
+  }).then(
       function() {
         // Only mark the tab saved if nothing was typed while writing.
         if (this.version_ === version) {
@@ -241,7 +248,12 @@ Tabs.prototype.showTab = function(tabId) {
   this.editor_.setSession(tab.getSession(), tab.getExtension());
   this.currentTab_ = tab;
   $.event.trigger('switchtab', tab);
-  this.editor_.focus();
+  if (this.dialogController_.isOpen()) {
+    // A new session is editable; keep the editor locked behind the dialog.
+    this.editor_.disable();
+  } else {
+    this.editor_.focus();
+  }
 };
 
 Tabs.prototype.close = function(tabId) {
@@ -293,13 +305,8 @@ Tabs.prototype.closeTab_ = function(tab) {
 
   if (closingLastTab) {
     this.currentTab_ = null;
-    if (util.isInstalledApp()) {
-      // Closing the last tab closes the app window, as in the Chrome App.
-      window.close();
-    } else {
-      // A browser tab can't be closed by script, so start a fresh document.
-      this.newTab();
-    }
+    // The app closes the window (or starts a new document in a browser tab).
+    $.event.trigger('lasttabclosed');
   }
 };
 
@@ -447,10 +454,13 @@ Tabs.prototype.getFilesToRetain = function() {
  * Opens are queued so that opening the same file twice at once can't create
  * two tabs for it.
  * @param {!FileSystemFileHandle} entry
+ * @param {boolean=} opt_quiet Skip files that can't be read without showing
+ *     an error, as the Chrome App did when restoring files on launch.
  * @return {!Promise}
  */
-Tabs.prototype.openFileEntry = function(entry) {
-  var opened = this.openQueue_.then(this.openFileEntryNow_.bind(this, entry));
+Tabs.prototype.openFileEntry = function(entry, opt_quiet) {
+  var opened = this.openQueue_.then(
+      this.openFileEntryNow_.bind(this, entry, !!opt_quiet));
   this.openQueue_ = opened.catch(function(e) {
     console.error('Failed to open file:', e);
   });
@@ -459,10 +469,11 @@ Tabs.prototype.openFileEntry = function(entry) {
 
 /**
  * @param {!FileSystemFileHandle} entry
+ * @param {boolean} quiet
  * @return {!Promise}
  * @private
  */
-Tabs.prototype.openFileEntryNow_ = async function(entry) {
+Tabs.prototype.openFileEntryNow_ = async function(entry, quiet) {
   for (var i = 0; i < this.tabs_.length; i++) {
     var tabEntry = this.tabs_[i].getEntry();
     if (tabEntry && await fileSystem.isSameFile(tabEntry, entry)) {
@@ -471,11 +482,15 @@ Tabs.prototype.openFileEntryNow_ = async function(entry) {
     }
   }
 
-  $.event.trigger('loadingfile');
   var content;
   try {
+    if (!quiet) $.event.trigger('loadingfile');
     content = await fileSystem.readText(entry);
   } catch (e) {
+    if (quiet) {
+      console.warn('Skipping file that could not be reopened:', entry.name, e);
+      return;
+    }
     util.handleFSError(e);
     this.reportOpenError_(e);
     return;

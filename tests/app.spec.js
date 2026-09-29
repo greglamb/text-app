@@ -75,6 +75,20 @@ async function openFileViaPicker(page, name, content) {
   await expect(title(page)).toHaveText(name);
 }
 
+/**
+ * Opens the app in a window created by script. Browsers only let script
+ * close such windows (or ones with a single history entry, like an installed
+ * app's window), and Playwright's own pages have two entries.
+ */
+async function openClosableApp(context, opener, baseURL) {
+  const [app] = await Promise.all([
+    context.waitForEvent('page'),
+    opener.evaluate((url) => { window.open(url); }, baseURL),
+  ]);
+  await expect(tabNames(app)).not.toHaveCount(0);
+  return app;
+}
+
 async function retainedNames(page) {
   return page.evaluate(async () =>
     (await retainedFiles.load()).map((handle) => handle.name));
@@ -87,6 +101,9 @@ test('loads with the UI translated and an Untitled tab', async ({page}) => {
   await expect(page.locator('#search-input'))
       .toHaveAttribute('placeholder', /\S/);
   await expect(page).toHaveTitle('Untitled 1 - Text');
+  // Message names are case-insensitive, as in chrome.i18n.
+  await expect(page.locator('label[for="setting-theme-default"]'))
+      .not.toBeEmpty();
 });
 
 test('opens, edits and saves a file', async ({page}) => {
@@ -105,6 +122,28 @@ test('opens, edits and saves a file', async ({page}) => {
   await page.keyboard.press('Control+s');
   await expect(title(page)).not.toHaveClass(/unsaved/);
   expect(await readFile(page, 'hello.txt')).toBe('hello world, again');
+});
+
+test('opens UTF-16 files that have a byte order mark', async ({page}) => {
+  await openApp(page);
+  await page.evaluate(async () => {
+    const text = 'Grüße, 世界';
+    const bytes = new Uint8Array(2 + text.length * 2);
+    bytes.set([0xFF, 0xFE]);
+    for (let i = 0; i < text.length; i++) {
+      bytes[2 + i * 2] = text.charCodeAt(i) & 0xFF;
+      bytes[3 + i * 2] = text.charCodeAt(i) >> 8;
+    }
+    const root = await navigator.storage.getDirectory();
+    const handle = await root.getFileHandle('unicode.txt', {create: true});
+    const writable = await handle.createWritable();
+    await writable.write(bytes);
+    await writable.close();
+    window.__files = {'unicode.txt': handle};
+  });
+  await mockOpenPicker(page, ['unicode.txt']);
+  await page.keyboard.press('Control+o');
+  await expect(editor(page)).toHaveText('Grüße, 世界');
 });
 
 test('keeps CRLF line endings when saving', async ({page}) => {
@@ -181,6 +220,44 @@ test('shows an error when a file can no longer be read', async ({page}) => {
   await expect(tabNames(page)).toHaveText(['Untitled 1']);
 });
 
+test('reopens files silently when only read access is kept', async ({page}) => {
+  await openApp(page);
+  await openFileViaPicker(page, 'viewed.txt', 'just looking');
+  await expect.poll(() => retainedNames(page)).toEqual(['viewed.txt']);
+
+  // A picker grants read access; write access is only asked for on save.
+  await page.addInitScript(() => {
+    FileSystemHandle.prototype.queryPermission =
+        async ({mode}) => (mode === 'read' ? 'granted' : 'prompt');
+  });
+  await page.reload();
+  await expect(tabNames(page)).toHaveText(['viewed.txt']);
+  await expect(page.locator('#dialog-container')).not.toHaveClass(/open/);
+});
+
+test('launched files open after the restored ones, in front', async ({page}) => {
+  await openApp(page);
+  await openFileViaPicker(page, 'restored.txt', 'restored');
+  await createFile(page, 'launched.txt', 'launched');
+  await expect.poll(() => retainedNames(page)).toEqual(['restored.txt']);
+
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'launchQueue', {
+      configurable: true,
+      value: {
+        setConsumer: (consumer) => {
+          navigator.storage.getDirectory()
+              .then((root) => root.getFileHandle('launched.txt'))
+              .then((handle) => consumer({files: [handle]}));
+        },
+      },
+    });
+  });
+  await page.reload();
+  await expect(tabNames(page)).toHaveText(['restored.txt', 'launched.txt']);
+  await expect(title(page)).toHaveText('launched.txt');
+});
+
 test('reopens the files from the last session', async ({page}) => {
   await openApp(page);
   await openFileViaPicker(page, 'one.txt', '1');
@@ -245,6 +322,26 @@ test('Ctrl+Shift+N opens an empty window', async ({page, context}) => {
   ]);
   await expect(tabNames(popup)).toHaveText(['Untitled 1']);
   expect(new URL(popup.url()).searchParams.get('new-window')).toBe('1');
+
+  // The empty window must not replace the main window's saved session.
+  await popup.waitForTimeout(600);
+  expect(await retainedNames(page)).toEqual(['busy.txt']);
+});
+
+test('a second window starts empty and takes over when the first closes', async ({page, context}) => {
+  await openApp(page);
+  await openFileViaPicker(page, 'first.txt', 'first');
+  await expect.poll(() => retainedNames(page)).toEqual(['first.txt']);
+
+  const second = await context.newPage();
+  await openApp(second);
+  await expect(tabNames(second)).toHaveText(['Untitled 1']);
+  await second.waitForTimeout(600);
+  expect(await retainedNames(second)).toEqual(['first.txt']);
+
+  // Once the first window is gone, the last window left saves the session.
+  await page.close();
+  await expect.poll(() => retainedNames(second)).toEqual([]);
 });
 
 test('closing the last tab in a browser tab starts a new document', async ({page}) => {
@@ -254,6 +351,42 @@ test('closing the last tab in a browser tab starts a new document', async ({page
   await expect(tabNames(page)).toHaveText(['Untitled 1']);
   await expect(title(page)).toHaveText('Untitled 1');
   await expect.poll(() => retainedNames(page)).toEqual([]);
+});
+
+test('closing the last tab of an installed app window saves the empty session', async ({page, context, baseURL}) => {
+  const app = await openClosableApp(context, page, baseURL);
+  await openFileViaPicker(app, 'only.txt', 'only');
+  await expect.poll(() => retainedNames(app)).toEqual(['only.txt']);
+
+  // Headless Chromium can't run in display-mode: standalone.
+  await app.evaluate(() => { util.isInstalledApp = () => true; });
+  const closed = app.waitForEvent('close');
+  // The window can close before Playwright finishes sending the key.
+  await app.keyboard.press('Control+w').catch(() => {});
+  await closed;
+
+  await openApp(page);
+  await expect(tabNames(page)).toHaveText(['Untitled 1']);
+});
+
+test('Ctrl+Shift+W asks about unsaved tabs once, then closes', async ({page, context, baseURL}) => {
+  const app = await openClosableApp(context, page, baseURL);
+  await editor(app).click();
+  await app.keyboard.type('scratch');
+
+  const browserDialogs = [];
+  app.on('dialog', (dialog) => {
+    browserDialogs.push(dialog.type());
+    dialog.accept();
+  });
+  const closed = app.waitForEvent('close');
+  await app.keyboard.press('Control+Shift+W');
+  await expect(app.locator('.dialog-text'))
+      .toContainText('Untitled 1 has been modified.');
+  // The window can close before Playwright finishes the click.
+  await app.locator('#no').click().catch(() => {});
+  await closed;
+  expect(browserDialogs).toEqual([]);
 });
 
 test('settings persist and sync to other windows', async ({page, context}) => {
@@ -320,6 +453,9 @@ test('i18n matches chrome.i18n locale fallback and placeholders', async ({page})
     firstSupported: i18n.pickLocale(['xx', 'fr-CA']),
     unknown: i18n.pickLocale(['xx']),
     count: i18n.getMessage('searchCounting', [2, 5]),
+    anyCase: i18n.getMessage('DeviceThemeOption') ===
+        i18n.getMessage('deviceThemeOption') &&
+        i18n.getMessage('deviceThemeOption') !== '',
     prompt: i18n.getMessage('saveFilePromptLine1', 'a.txt'),
     missing: i18n.getMessage('noSuchMessage'),
   }));
@@ -333,6 +469,7 @@ test('i18n matches chrome.i18n locale fallback and placeholders', async ({page})
     firstSupported: 'fr_CA',
     unknown: 'en',
     count: '2 of 5',
+    anyCase: true,
     prompt: 'a.txt has been modified.',
     missing: '',
   });
