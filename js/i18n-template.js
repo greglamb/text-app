@@ -14,7 +14,7 @@
  *     <span i18n-values="title:myTitle;.style.fontSize:fontSize"></span>
  *
  * This file is heavily inspired by the i18n_template_no_process.js file in chromium,
- * with minor tweaks to support chrome.i18n.
+ * with minor tweaks to use the app's i18n module (js/i18n.js).
  */
 
 var i18nTemplate = (function() {
@@ -28,10 +28,10 @@ var i18nTemplate = (function() {
     /**
      * This handler sets the textContent of the element.
      * @param {HTMLElement} element The node to modify.
-     * @param {string} key The name of the message in chrome.i18n.
+     * @param {string} key The name of the message in _locales.
      */
     'i18n-content': function(element, key) {
-      element.textContent = chrome.i18n.getMessage(key);
+      element.textContent = i18n.getMessage(key);
     },
 
     /**
@@ -41,7 +41,7 @@ var i18nTemplate = (function() {
      *   .nested.dom.property:key
      * @param {HTMLElement} element The node to modify.
      * @param {string} attributeAndKeys The path of the attribute to modify
-     *     followed by a colon, and the name of the message in chrome.i18n.
+     *     followed by a colon, and the name of the message in _locales.
      *     Multiple attribute/key pairs may be separated by semicolons.
      */
     'i18n-values': function(element, attributeAndKeys) {
@@ -59,7 +59,7 @@ var i18nTemplate = (function() {
         var propName = attributeAndKeyPair[1];
         var propExpr = attributeAndKeyPair[2];
 
-        var value = chrome.i18n.getMessage(propExpr);
+        var value = i18n.getMessage(propExpr);
 
         // Allow a property of the form '.foo.bar' to assign a value into
         // element.foo.bar.
@@ -87,7 +87,7 @@ var i18nTemplate = (function() {
   var selector = '[' + attributeNames.join('],[') + ']';
 
   /**
-   * Processes a DOM tree with chrome.i18n.
+   * Processes a DOM tree with the loaded messages.
    * @param {HTMLElement} node The root of the DOM tree to process.
    */
   function process(node) {
@@ -107,4 +107,3 @@ var i18nTemplate = (function() {
   };
 }());
 
-$(document).ready(i18nTemplate.process(document));

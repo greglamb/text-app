@@ -5,11 +5,6 @@ function WindowController(editor, settings, tabs) {
   this.editor_ = editor;
   this.settings_ = settings;
   this.tabs_ = tabs;
-  document.getElementById('window-close').addEventListener('click', () => {
-    this.close();
-  });
-  $('#window-minimize').click(this.minimize_.bind(this));
-  $('#window-maximize').click(this.maximize_.bind(this));
   $('#toggle-sidebar').click(this.toggleSidebar_.bind(this));
   $('#sidebar').on('transitionend', this.updateSidebarVisibility_.bind(this));
   $('#sidebar-resizer').mousedown(this.resizeStart_.bind(this));
@@ -59,22 +54,14 @@ WindowController.prototype.initSidebar_ = function() {
     $('#sidebar').css('width', this.settings_.get('sidebarwidth') + 'px');
     $('#sidebar').css('border-right-width', '2px');
     $('#toggle-sidebar')
-        .attr('title', chrome.i18n.getMessage('closeSidebarButton'));
+        .attr('title', i18n.getMessage('closeSidebarButton'));
   } else {
     $('#sidebar').css('width', '0');
     $('#sidebar').css('border-right-width', '0');
     $('#toggle-sidebar')
-        .attr('title', chrome.i18n.getMessage('openSidebarButton'));
+        .attr('title', i18n.getMessage('openSidebarButton'));
   }
   this.updateSidebarVisibility_();
-};
-
-WindowController.prototype.windowControlsVisible = function(show) {
-  if (show) {
-    $('header').removeClass('hide-controls');
-  } else {
-    $('header').addClass('hide-controls');
-  }
 };
 
 /**
@@ -88,33 +75,13 @@ WindowController.prototype.setTheme = function(theme) {
  * Close app window after warning user of all unsaved progress if present.
  */
 WindowController.prototype.close = function() {
-  this.tabs_.promptAllUnsaved(window.close);
+  this.tabs_.promptAllUnsaved(() => {
+    $.event.trigger('windowcloserequested');
+  });
 };
 
 WindowController.prototype.focus_ = function() {
-  window.chrome.app.window.current().focus();
-};
-
-WindowController.prototype.minimize_ = function() {
-  window.chrome.app.window.current().minimize();
-};
-
-WindowController.prototype.maximize_ = function() {
-  var maximized = window.chrome.app.window.current().isMaximized();
-
-  if (maximized) {
-    window.chrome.app.window.current().restore();
-    $('#window-maximize')
-        .attr('title', chrome.i18n.getMessage('maximizeButton'));
-  } else {
-    window.chrome.app.window.current().maximize();
-    $('#window-maximize')
-        .attr('title', chrome.i18n.getMessage('restoreButton'));
-  }
-};
-
-WindowController.prototype.setAlwaysOnTop = function(isAlwaysOnTop) {
-  window.chrome.app.window.current().setAlwaysOnTop(isAlwaysOnTop);
+  window.focus();
 };
 
 /** Opens the sidebar if it is closed. */
@@ -125,7 +92,7 @@ WindowController.prototype.openSidebar = function() {
     $('#sidebar').css('border-right-width', '2px');
     $('#sidebar').css('visibility', 'visible');
     $('#toggle-sidebar')
-        .attr('title', chrome.i18n.getMessage('closeSidebarButton'));
+        .attr('title', i18n.getMessage('closeSidebarButton'));
 };
 
 WindowController.prototype.toggleSidebar_ = function() {
@@ -135,22 +102,24 @@ WindowController.prototype.toggleSidebar_ = function() {
     $('#sidebar').css('width', '0');
     $('#sidebar').css('border-right-width', '0');
     $('#toggle-sidebar')
-        .attr('title', chrome.i18n.getMessage('openSidebarButton'));
+        .attr('title', i18n.getMessage('openSidebarButton'));
   } else {
     this.openSidebar();
   }
 };
 
 WindowController.prototype.onLoadingFile = function(e) {
-  $('#title-filename').text(chrome.i18n.getMessage('loadingTitle'));
+  $('#title-filename').text(i18n.getMessage('loadingTitle'));
 };
 
 WindowController.prototype.onFileSystemError = function(e) {
-  $('#title-filename').text(chrome.i18n.getMessage('errorTitle'));
+  $('#title-filename').text(i18n.getMessage('errorTitle'));
 };
 
 WindowController.prototype.onChangeTab_ = function(e, tab) {
   $('#title-filename').text(tab.getName());
+  $('#title-filename').attr('title', tab.getPath() || '');
+  document.title = tab.getName() + ' - Text';
   this.onTabChange_();
 };
 
@@ -159,7 +128,9 @@ WindowController.prototype.onTabPathChange = function(e, tab) {
 };
 
 WindowController.prototype.onTabChange_ = function(e, tab) {
-  if (this.tabs_.getCurrentTab().isSaved()) {
+  var currentTab = this.tabs_.getCurrentTab();
+  if (!currentTab) return;
+  if (currentTab.isSaved()) {
     $('#title-filename').removeClass('unsaved');
   } else {
     $('#title-filename').addClass('unsaved');

@@ -56,6 +56,26 @@ DialogController.prototype.reenableEverything_ = function() {
   this.editor_.enable();
 };
 
+/** @return {boolean} True if a dialog is showing. */
+DialogController.prototype.isOpen = function() {
+  return this.container_.hasClass('open');
+};
+
+/**
+ * Shows a message with a single OK button.
+ * @param {string} text
+ */
+DialogController.prototype.showError = function(text) {
+  if (this.isOpen()) {
+    console.error('Error while a dialog is open:', text);
+    return;
+  }
+  this.setText(text);
+  this.resetButtons();
+  this.addButton('ok', i18n.getMessage('okDialogButton'));
+  this.show();
+};
+
 DialogController.prototype.resetButtons = function() {
   this.container_.find('.dialog-button').remove();
 };

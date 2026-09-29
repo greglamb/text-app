@@ -606,23 +606,6 @@ header.search-active .search-navigation-button.has-results {
   font-size: 20px;
 }
 
-#window-minimize {
-  /* Move the 'remove' icon down so it looks like a minimize icon */
-  padding-top: 18px;
-}
-
-header.hide-controls #window-minimize {
-  visibility: hidden;
-}
-
-header.hide-controls #window-maximize {
-  visibility: hidden;
-}
-
-header.hide-controls #window-close {
-  visibility: hidden;
-}
-
 #editor {
   -webkit-box-flex: 1.0;
   position: relative;

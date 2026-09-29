@@ -4,16 +4,14 @@
 function Settings() {
   this.ready_ = false;
   this.settings_ = {};
-  var storageKeys = {};
   for (var key in Settings.SETTINGS) {
-    this.settings_[key] = Settings.SETTINGS[key]['default'];
-    storageKeys['settings-' + key] = this.settings_[key];
+    this.settings_[key] = this.read_(key);
   }
-  // Can be changed to chrome.storage.local.
-  this.storage_ = chrome.storage[Settings.AREA];
-  chrome.storage.onChanged.addListener(this.onChanged_.bind(this));
-  chrome.runtime.onInstalled.addListener(this.removeOldSettings_.bind(this));
-  this.storage_.get(storageKeys, this.getSettingsCallback_.bind(this));
+  this.ready_ = true;
+
+  // Keep windows of the app in sync: the storage event fires in every other
+  // window of the same origin when one of them writes a setting.
+  window.addEventListener('storage', this.onStorage_.bind(this));
 
   /** The media query list to detect if the preferred color scheme is dark. */
   this.colorSchemeMatcherDark_ =
@@ -27,15 +25,14 @@ function Settings() {
 
 /**
  * @type {string}
- * 'sync' or 'local'.
+ * Prefix for the localStorage keys that hold settings.
  */
-Settings.AREA = 'sync';
+Settings.STORAGE_PREFIX = 'settings-';
 
 /**
  * @type {Object.<string, Object>}
  */
 Settings.SETTINGS = {
-  'alwaysontop': {'default': false, 'type': 'boolean', 'widget': 'checkbox'},
   'fontsize': {'default': 14, 'type': 'number', 'widget': 'number'},
   'linenumbers': {'default': true, 'type': 'boolean', 'widget': 'checkbox'},
   'sidebaropen': {'default': false, 'type': 'boolean', 'widget': null},
@@ -48,9 +45,20 @@ Settings.SETTINGS = {
   'search': {'default': true, 'type': 'boolean', 'widget': 'search'},
 };
 
-Settings.prototype.removeOldSettings_ = function() {
-  if ('autosave' in this.settings_) delete this.settings_['autosave'];
-  this.storage_.remove('autosave');
+/**
+ * @param {string} key Setting name.
+ * @return {*} The stored value, or the default if none is stored.
+ * @private
+ */
+Settings.prototype.read_ = function(key) {
+  var defaultValue = Settings.SETTINGS[key]['default'];
+  try {
+    var raw = window.localStorage.getItem(Settings.STORAGE_PREFIX + key);
+    return raw === null ? defaultValue : JSON.parse(raw);
+  } catch (e) {
+    console.warn('Could not read setting', key, e);
+    return defaultValue;
+  }
 };
 
 /**
@@ -72,11 +80,13 @@ Settings.prototype.getAll = function() {
 };
 
 Settings.prototype.set = function(key, value) {
-  var item = {};
-  item['settings-' + key] = value;
-  this.storage_.set(item);
-  // this.settings_ will be updated in onChanged_ to keep them in sync with
-  // storage.
+  try {
+    window.localStorage.setItem(
+        Settings.STORAGE_PREFIX + key, JSON.stringify(value));
+  } catch (e) {
+    console.warn('Could not save setting', key, e);
+  }
+  this.update_(key, value);
 };
 
 Settings.prototype.reset = function(key) {
@@ -88,28 +98,33 @@ Settings.prototype.isReady = function() {
   return this.ready_;
 };
 
-Settings.prototype.getSettingsCallback_ = function(settings) {
-  this.ready_ = true;
-  for (var key in settings) {
-    var value = settings[key];
-    key = key.substring(9);
-    this.settings_[key] = value;
-  }
-  $.event.trigger('settingsready');
+/**
+ * @param {string} key Setting name.
+ * @param {*} value New value.
+ * @private
+ */
+Settings.prototype.update_ = function(key, value) {
+  if (this.settings_[key] === value) return;
+  this.settings_[key] = value;
+  $.event.trigger('settingschange', [key, value]);
 };
 
-Settings.prototype.onChanged_ = function(changes, areaName) {
-  if (areaName !== Settings.AREA) {
-    console.warn('Storage change in wrong area. Maybe a bug?');
+/**
+ * Applies a setting changed in another window of the app.
+ * @param {!StorageEvent} e
+ * @private
+ */
+Settings.prototype.onStorage_ = function(e) {
+  if (e.storageArea !== window.localStorage) return;
+  if (e.key === null) {
+    // localStorage.clear() was called: reset everything to defaults.
+    for (var name in Settings.SETTINGS) {
+      this.update_(name, Settings.SETTINGS[name]['default']);
+    }
     return;
   }
-
-  for (var key in changes) {
-    if (key.indexOf('settings-') !== 0) continue;
-    var value = changes[key].newValue;
-    key = key.substring(9);
-    console.log('Settings changed:', key, value);
-    this.settings_[key] = value;
-    $.event.trigger('settingschange', [key, value]);
-  }
+  if (e.key.indexOf(Settings.STORAGE_PREFIX) !== 0) return;
+  var key = e.key.substring(Settings.STORAGE_PREFIX.length);
+  if (!(key in Settings.SETTINGS)) return;
+  this.update_(key, this.read_(key));
 };
