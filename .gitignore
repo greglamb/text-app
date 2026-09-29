@@ -9,3 +9,9 @@ third_party/codemirror.next/node_modules/*
 third_party/codemirror.next/bundle.js
 third_party/codemirror.next/bundle.d.ts
 third_party/codemirror.next/codemirror.next.*
+
+# Web app build
+node_modules/
+dist/
+test-results/
+playwright-report/

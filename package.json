@@ -1,0 +1,22 @@
+{
+  "name": "text-app",
+  "version": "0.2609.2900",
+  "private": true,
+  "description": "Text, the ChromeOS text editor, as an installable web app (PWA).",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:codemirror": "npm --prefix third_party/codemirror.next ci && npm --prefix third_party/codemirror.next run rebuild",
+    "build": "node scripts/build.mjs",
+    "serve": "node scripts/serve.mjs",
+    "start": "npm run build && npm run serve",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.0",
+    "workbox-build": "^7.3.0"
+  }
+}
